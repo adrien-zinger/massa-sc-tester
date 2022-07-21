@@ -9,13 +9,29 @@ mod types;
 use ledger_interface::{CallItem, InterfaceImpl};
 
 pub struct Arguments {
-    filename: String,
+    filename: Option<String>,
     module: Vec<u8>,
     function: Option<(String, String)>,
     caller: Option<CallItem>,
 }
 
-fn parse_arguments() -> Result<Arguments> {
+fn parse_module(args: &[String]) -> Result<(Option<String>, Option<Vec<u8>>)> {
+    // parse the file
+    let name = args[1].clone();
+    let path = Path::new(&name);
+    if !path.is_file() {
+        return Ok((None, None));
+    }
+    if path.extension().unwrap_or_default() != "wasm" {
+        bail!("{} should be .wasm", name)
+    }
+    Ok((
+        Some(path.to_string_lossy().to_string()),
+        Some(fs::read(path)?),
+    ))
+}
+
+fn parse_arguments(interface: &InterfaceImpl) -> Result<Arguments> {
     // collect the arguments
     let args: Vec<String> = env::args().collect();
     let len = args.len();
@@ -24,20 +40,10 @@ fn parse_arguments() -> Result<Arguments> {
         bail!("invalid number of arguments")
     }
 
-    // parse the file
-    let name = args[1].clone();
-    let path = Path::new(&name);
-    if !path.is_file() {
-        bail!("{} isn't file", name)
-    }
-    let extension = path.extension().unwrap_or_default();
-    if extension != "wasm" {
-        bail!("{} should be .wasm", name)
-    }
-    let bin = fs::read(path)?;
+    let (filename, module_opt) = parse_module(&args)?;
 
     // parse the configuration parameters
-    let p_list: [&str; 4] = ["function", "param", "addr", "coins"];
+    let p_list: [&str; 5] = ["function", "param", "addr", "coins", "sender"];
     let mut p: HashMap<String, String> = HashMap::new();
     for v in args.iter().skip(2) {
         if let Some(index) = v.find('=') {
@@ -52,10 +58,29 @@ fn parse_arguments() -> Result<Arguments> {
         }
     }
 
+    let module = match module_opt {
+        Some(module) => module,
+        None => {
+            let addr = match p.get("addr") {
+                Some(addr) => addr,
+                None => bail!("command reauire an address or a smart contract file"),
+            };
+            let bytecode = match interface.get_entry(addr) {
+                Ok(entry) => entry.bytecode,
+                Err(err) => bail!("no bytecode found{}", err),
+            };
+            match bytecode {
+                Some(module) => module,
+                None => bail!("no module found at address"),
+            }
+        }
+    };
+
     // return parsed arguments
     Ok(Arguments {
-        filename: path.to_str().unwrap().to_string(),
-        module: bin,
+        filename,
+        module,
+        addr: p.get("addr"),
         function: match (
             p.get_key_value("function").map(|x| x.1.clone()),
             p.get_key_value("param").map(|x| x.1.clone()),
@@ -65,7 +90,7 @@ fn parse_arguments() -> Result<Arguments> {
             _ => None,
         },
         caller: match (
-            p.get_key_value("addr").map(|x| x.1.clone()),
+            p.get_key_value("sender").map(|x| x.1.clone()),
             p.get_key_value("coins").map(|x| x.1.clone()),
         ) {
             (Some(address), Some(coins)) => Some(CallItem {
@@ -84,13 +109,17 @@ fn parse_arguments() -> Result<Arguments> {
 }
 
 fn main() -> Result<()> {
-    let args: Arguments = parse_arguments()?;
     let ledger_context = InterfaceImpl::new()?;
+    let args: Arguments = parse_arguments(&ledger_context)?;
+
     ledger_context.reset_addresses()?;
     if let Some(caller) = args.caller {
         ledger_context.call_stack_push(caller)?;
     }
-    println!("run {}", args.filename);
+    if let Some(filename) args.filename {
+        println!("run {}", filename);
+    }
+    if let Some(args.)
     println!(
         "remaining points: {}",
         if let Some((name, param)) = args.function {
